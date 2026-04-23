@@ -1,0 +1,16 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: vici-php-dev
+    privileged: true
+    volumes:
+      - ./:/app
+    working_dir: /app
+    # NET_ADMIN is not required for VICI commands to work, but lets callers
+    # experiment with `initiate()` / kernel IPsec interactions if they want.
+    cap_add:
+      - NET_ADMIN
+    tty: true
+    stdin_open: true
