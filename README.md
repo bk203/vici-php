@@ -192,6 +192,32 @@ composer cs:fix          # PHP-CS-Fixer apply
 
 Integration tests use an in-process `MockViciServer` backed by a socket pair, so no real charon daemon or container is required.
 
+## Docker development environment
+
+A bare Ubuntu 24.04 container runs strongSwan `charon` plus PHP 8.4 so you can
+exercise the library against a real VICI socket without installing anything on
+the host. `charon` is started by the entrypoint and listens on
+`/var/run/charon.vici` for the lifetime of the container.
+
+```bash
+docker compose build
+docker compose run --rm app composer install
+docker compose run --rm app composer test          # full suite (unit + integration)
+docker compose run --rm app bash                   # interactive shell
+```
+
+With the container shell you can hit the live daemon directly:
+
+```bash
+docker compose run --rm app php -r \
+  'require "vendor/autoload.php"; print_r((new Bk203\Vici\Session())->version());'
+```
+
+The compose file bind-mounts the repository at `/app`, so host-side edits are
+picked up immediately. `NET_ADMIN` is granted to leave the door open for
+`initiate()` / kernel IPsec experiments, but it is not required for VICI
+commands like `version()`, `stats()`, `load-conn`, or `list-sas`.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
