@@ -9,9 +9,12 @@ use Bk203\Vici\Exception\ConnectionException;
 /**
  * Connects to a charon VICI Unix domain socket.
  */
-final class UnixSocketTransport extends SocketTransport
+final class UnixSocketTransport extends SocketTransport implements ReconnectableTransportInterface
 {
     public const string DEFAULT_PATH = '/var/run/charon.vici';
+
+    /** @var (callable(): void)|null */
+    private $onReconnect = null;
 
     public function __construct(
         public readonly string $path = self::DEFAULT_PATH,
@@ -26,6 +29,15 @@ final class UnixSocketTransport extends SocketTransport
     {
         $this->close();
         $this->connect();
+
+        if ($this->onReconnect !== null) {
+            ($this->onReconnect)();
+        }
+    }
+
+    public function setOnReconnect(?callable $callback): void
+    {
+        $this->onReconnect = $callback;
     }
 
     protected function connect(): void

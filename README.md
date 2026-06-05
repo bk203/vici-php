@@ -89,11 +89,13 @@ while (true) {
 
 `ReconnectingTransport` is opt-in; `new Session()` alone still uses a plain `UnixSocketTransport` with no automatic recovery.
 
-**v1 limitations**
+When the transport implements {@see \Bk203\Vici\Transport\ReconnectableTransportInterface} (including `ReconnectingTransport`), `Session` automatically replays daemon-side `EVENT_REGISTER` calls after each reconnect.
 
-- Retry covers one transport I/O call. Multi-packet commands (`streamedRequest()`, `EventListener::listen()`) can still fail mid-operation; catch `ConnectionException` and restart the command or listener loop.
-- Daemon-side `EVENT_REGISTER` state is not replayed after reconnect. Re-register events or wait for a future Session-level restore helper.
+**Limitations**
+
+- `request()` / `requireSuccess()` retry once on `ConnectionException`. Multi-packet commands (`streamedRequest()`, `EventListener::listen()`) do not auto-resume mid-operation; catch `ConnectionException` and restart the command or listener loop.
 - `TimeoutException` is not retried (slow charon is not treated as a dead socket).
+- Custom transports can implement `ReconnectableTransportInterface` and receive the same restore hook via `setOnReconnect()`.
 
 ## Common workflows
 

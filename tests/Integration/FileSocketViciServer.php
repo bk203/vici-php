@@ -117,12 +117,32 @@ final class FileSocketViciServer
         return $packet->payload === '' ? [] : $this->decoder->decode($packet->payload);
     }
 
+    public function expectEventRegister(string $event, float $timeout = 1.0): void
+    {
+        $packet = $this->readPacket($timeout);
+        Assert::assertSame(PacketType::EVENT_REGISTER, $packet->type);
+        Assert::assertSame($event, $packet->name);
+    }
+
     /**
      * @param array<array-key, mixed> $message
      */
     public function sendCmdResponse(array $message = []): void
     {
         $this->writePacket(Packet::cmdResponse($this->encoder->encode($message)));
+    }
+
+    public function sendEventConfirm(): void
+    {
+        $this->writePacket(Packet::eventConfirm());
+    }
+
+    /**
+     * @param array<array-key, mixed> $message
+     */
+    public function sendEvent(string $event, array $message = []): void
+    {
+        $this->writePacket(Packet::event($event, $this->encoder->encode($message)));
     }
 
     private function readPacket(float $timeout = 1.0): Packet
