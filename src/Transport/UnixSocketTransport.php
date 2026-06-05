@@ -22,15 +22,27 @@ final class UnixSocketTransport extends SocketTransport
         $this->connect();
     }
 
-    private function connect(): void
+    public function reconnect(): void
     {
+        $this->close();
+        $this->connect();
+    }
+
+    protected function connect(): void
+    {
+        $deadline = microtime(true) + $this->connectTimeout;
+        while (!file_exists($this->path) && microtime(true) < $deadline) {
+            usleep(100_000);
+        }
+
+        $remaining = max(0.0, $deadline - microtime(true));
         $errno = 0;
         $errstr = '';
         $stream = @stream_socket_client(
             'unix://' . $this->path,
             $errno,
             $errstr,
-            $this->connectTimeout,
+            $remaining,
             \STREAM_CLIENT_CONNECT,
         );
 
@@ -43,13 +55,20 @@ final class UnixSocketTransport extends SocketTransport
             ));
         }
 
+        $this->applyStreamOptions($stream);
+        $this->stream = $stream;
+    }
+
+    /**
+     * @param resource $stream
+     */
+    private function applyStreamOptions($stream): void
+    {
         stream_set_blocking($stream, true);
         if ($this->readTimeout !== null) {
             $sec = (int) floor($this->readTimeout);
             $usec = (int) round(($this->readTimeout - $sec) * 1_000_000);
             stream_set_timeout($stream, $sec, $usec);
         }
-
-        $this->stream = $stream;
     }
 }

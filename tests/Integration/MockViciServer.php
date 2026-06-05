@@ -28,7 +28,7 @@ final class MockViciServer
     /** @var resource */
     private $serverStream;
 
-    private readonly StreamTransport $clientTransport;
+    private StreamTransport $clientTransport;
     private readonly PacketCodec $codec;
     private readonly MessageEncoder $encoder;
     private readonly MessageDecoder $decoder;
@@ -63,6 +63,32 @@ final class MockViciServer
             @fclose($this->serverStream);
         }
         $this->clientTransport->close();
+    }
+
+    /**
+     * Close the current socket pair and replace it with a fresh one, as if
+     * charon had restarted. Callers using {@see StreamTransport} must adopt
+     * {@see getClientTransport()} again; {@see ReconnectingTransport} clients
+     * recover via automatic reconnect on the next I/O.
+     */
+    public function simulateRestart(): void
+    {
+        if (\is_resource($this->serverStream)) {
+            @fclose($this->serverStream);
+        }
+        $this->clientTransport->close();
+
+        $pair = stream_socket_pair(
+            \STREAM_PF_UNIX,
+            \STREAM_SOCK_STREAM,
+            \STREAM_IPPROTO_IP,
+        );
+        if ($pair === false) {
+            throw new \RuntimeException('Failed to create socket pair for MockViciServer restart.');
+        }
+        [$clientSide, $serverSide] = $pair;
+        $this->serverStream = $serverSide;
+        $this->clientTransport = new StreamTransport($clientSide, readTimeout: 2.0);
     }
 
     // ------------------------------------------------------------------

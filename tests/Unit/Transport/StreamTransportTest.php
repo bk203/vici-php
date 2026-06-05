@@ -132,7 +132,24 @@ final class StreamTransportTest extends TestCase
         try {
             $transport->receive(0.5);
         } finally {
+            self::assertFalse($transport->isConnected());
             $transport->close();
+        }
+    }
+
+    public function testConnectionFailureInvalidatesStream(): void
+    {
+        [$transport, $peer] = $this->makePair();
+        self::assertTrue($transport->isConnected());
+
+        fclose($peer);
+
+        try {
+            $transport->receive(0.5);
+            self::fail('Expected ConnectionException.');
+        } catch (\Bk203\Vici\Exception\ConnectionException) {
+            self::assertFalse($transport->isConnected());
+            self::assertNull($transport->getStream());
         }
     }
 
