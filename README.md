@@ -192,12 +192,27 @@ All exceptions extend `Bk203\Vici\Exception\ViciException`:
 
 | Exception                    | Thrown when |
 | ---------------------------- | ----------- |
-| `ConnectionException`        | Underlying socket cannot connect, closes mid-stream, or `stream_select()` fails |
+| `ConnectionException`        | Underlying socket cannot connect, closes mid-stream, or `stream_select()` fails. Exposes `->context` (`ConnectionFailureContext`) and `->getDetailedMessage()` with stream metadata, endpoint, partial I/O progress, and PHP error text |
 | `TimeoutException`           | Read/connect timeout elapses |
 | `ProtocolException`          | Framing or message-encoding violation on the wire |
 | `CommandUnknownException`    | Server replies with `CMD_UNKNOWN` |
 | `CommandException`           | Command completes with `success = no`; exposes `->command` and `->response` |
 | `EventRegistrationException` | Server replies with `EVENT_UNKNOWN` to `EVENT_REGISTER` / `EVENT_UNREGISTER` |
+
+For long-lived loops, log the detailed form when a connection fails:
+
+```php
+use Bk203\Vici\Exception\ConnectionException;
+
+try {
+    $session->version();
+} catch (ConnectionException $e) {
+    error_log($e->getDetailedMessage());
+    // Inspect $e->context?->endpoint for "socket file exists" vs stale fd
+    // Inspect $e->context?->streamMeta['eof'] and $e->context?->phpError
+    throw $e;
+}
+```
 
 ## Architecture
 

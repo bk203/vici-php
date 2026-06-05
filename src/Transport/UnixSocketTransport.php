@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bk203\Vici\Transport;
 
 use Bk203\Vici\Exception\ConnectionException;
+use Bk203\Vici\Exception\ConnectionFailureContext;
 
 /**
  * Connects to a charon VICI Unix domain socket.
@@ -59,16 +60,31 @@ final class UnixSocketTransport extends SocketTransport implements Reconnectable
         );
 
         if ($stream === false) {
-            throw new ConnectionException(\sprintf(
-                'Failed to connect to VICI socket %s: [%d] %s',
-                $this->path,
-                $errno,
-                $errstr,
-            ));
+            throw new ConnectionException(
+                \sprintf(
+                    'Failed to connect to VICI socket %s: [%d] %s',
+                    $this->path,
+                    $errno,
+                    $errstr,
+                ),
+                new ConnectionFailureContext(
+                    operation: 'connect',
+                    endpoint: $this->getEndpointDescription(),
+                    errno: $errno,
+                    phpError: $errstr !== '' ? $errstr : $this->capturePhpError(),
+                ),
+            );
         }
 
         $this->applyStreamOptions($stream);
         $this->stream = $stream;
+    }
+
+    protected function getEndpointDescription(): string
+    {
+        $state = file_exists($this->path) ? 'socket file exists' : 'socket file missing';
+
+        return \sprintf('unix://%s (%s)', $this->path, $state);
     }
 
     /**

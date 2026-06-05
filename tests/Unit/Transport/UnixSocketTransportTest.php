@@ -72,8 +72,14 @@ final class UnixSocketTransportTest extends TestCase
 
         $this->closeListener();
 
-        $this->expectException(ConnectionException::class);
-        $transport->reconnect();
+        try {
+            $transport->reconnect();
+            self::fail('Expected ConnectionException.');
+        } catch (ConnectionException $e) {
+            self::assertNotNull($e->context);
+            self::assertSame('connect', $e->context->operation);
+            self::assertStringContainsString('socket file missing', (string) $e->context->endpoint);
+        }
     }
 
     private function startListener(): void

@@ -102,6 +102,14 @@ final class ReconnectingTransport implements ReconnectableTransportInterface
                 }
             }
 
+            if ($last !== $first) {
+                throw new ConnectionException(
+                    $last->getMessage(),
+                    $last->context,
+                    $first,
+                );
+            }
+
             throw $last;
         }
     }

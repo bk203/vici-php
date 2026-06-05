@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bk203\Vici\Transport;
 
 use Bk203\Vici\Exception\ConnectionException;
+use Bk203\Vici\Exception\ConnectionFailureContext;
 
 /**
  * Connects to a charon VICI TCP socket (used when charon is configured with a
@@ -22,6 +23,11 @@ final class TcpSocketTransport extends SocketTransport
         $this->connect();
     }
 
+    protected function getEndpointDescription(): string
+    {
+        return \sprintf('tcp://%s:%d', $this->host, $this->port);
+    }
+
     private function connect(): void
     {
         $errno = 0;
@@ -35,13 +41,21 @@ final class TcpSocketTransport extends SocketTransport
         );
 
         if ($stream === false) {
-            throw new ConnectionException(\sprintf(
-                'Failed to connect to VICI TCP %s:%d: [%d] %s',
-                $this->host,
-                $this->port,
-                $errno,
-                $errstr,
-            ));
+            throw new ConnectionException(
+                \sprintf(
+                    'Failed to connect to VICI TCP %s:%d: [%d] %s',
+                    $this->host,
+                    $this->port,
+                    $errno,
+                    $errstr,
+                ),
+                new ConnectionFailureContext(
+                    operation: 'connect',
+                    endpoint: $this->getEndpointDescription(),
+                    errno: $errno,
+                    phpError: $errstr !== '' ? $errstr : null,
+                ),
+            );
         }
 
         stream_set_blocking($stream, true);
