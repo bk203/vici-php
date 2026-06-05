@@ -72,7 +72,7 @@ abstract class SocketTransport implements TransportInterface
         $ready = @stream_select($read, $write, $except, $sec, $usec);
 
         if ($ready === false) {
-            throw new ConnectionException('stream_select() failed on VICI transport.');
+            $this->connectionFailed('stream_select() failed on VICI transport.');
         }
 
         return $ready > 0;
@@ -96,6 +96,20 @@ abstract class SocketTransport implements TransportInterface
         return \is_resource($this->stream) ? $this->stream : null;
     }
 
+    protected function invalidate(): void
+    {
+        $this->close();
+    }
+
+    /**
+     * @return never
+     */
+    protected function connectionFailed(string $message): void
+    {
+        $this->invalidate();
+        throw new ConnectionException($message);
+    }
+
     private function writeAll(string $data): void
     {
         $stream = $this->requireStream();
@@ -110,9 +124,9 @@ abstract class SocketTransport implements TransportInterface
                     throw new TimeoutException('Timed out writing to VICI socket.');
                 }
                 if (feof($stream)) {
-                    throw new ConnectionException('VICI socket closed during write.');
+                    $this->connectionFailed('VICI socket closed during write.');
                 }
-                throw new ConnectionException('Failed to write to VICI socket.');
+                $this->connectionFailed('Failed to write to VICI socket.');
             }
             $written += $chunk;
         }
@@ -137,7 +151,7 @@ abstract class SocketTransport implements TransportInterface
                 $usec = (int) round(($remaining - $sec) * 1_000_000);
                 $ready = @stream_select($read, $write, $except, $sec, $usec);
                 if ($ready === false) {
-                    throw new ConnectionException('stream_select() failed on VICI transport.');
+                    $this->connectionFailed('stream_select() failed on VICI transport.');
                 }
                 if ($ready === 0) {
                     throw new TimeoutException('Timed out reading from VICI socket.');
@@ -148,11 +162,11 @@ abstract class SocketTransport implements TransportInterface
             \assert($need > 0);
             $chunk = @fread($stream, $need);
             if ($chunk === false) {
-                throw new ConnectionException('Failed to read from VICI socket.');
+                $this->connectionFailed('Failed to read from VICI socket.');
             }
             if ($chunk === '') {
                 if (feof($stream)) {
-                    throw new ConnectionException('VICI socket closed during read.');
+                    $this->connectionFailed('VICI socket closed during read.');
                 }
                 $meta = stream_get_meta_data($stream);
                 if ($meta['timed_out']) {
@@ -173,7 +187,7 @@ abstract class SocketTransport implements TransportInterface
     private function requireStream()
     {
         if (!\is_resource($this->stream)) {
-            throw new ConnectionException('VICI transport is not connected.');
+            $this->connectionFailed('VICI transport is not connected.');
         }
         return $this->stream;
     }

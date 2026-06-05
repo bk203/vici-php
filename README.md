@@ -5,7 +5,7 @@
 A pure-PHP client implementation of strongSwan's [VICI protocol](https://github.com/strongswan/strongswan/blob/master/src/libcharon/plugins/vici/README.md). Use it from PHP to monitor, configure, and control the IKE daemon `charon`.
 
 - Covers every command and event documented in the VICI README.
-- Pluggable transport: Unix domain socket (default) or TCP, plus a generic `StreamTransport` for injection and testing.
+- Pluggable transport: Unix domain socket (default) or TCP, plus a generic `StreamTransport` for injection and testing. An opt-in `ReconnectingTransport` wrapper recovers from charon restarts on Unix sockets.
 - Blocking `Session` for commands, plus an `EventListener` for long-running event subscriptions.
 - Streaming list commands (`list-sas`, `list-conns`, ...) expose event streams as PHP generators.
 - Fully typed, PHPStan level 8 clean, zero runtime dependencies.
@@ -67,6 +67,33 @@ use Bk203\Vici\Transport\StreamTransport;
 $stream = stream_socket_client('unix:///run/strongswan/charon.vici');
 $session = new Session(new StreamTransport($stream, readTimeout: 10.0));
 ```
+
+### Long-lived connections (Unix socket reconnect)
+
+For daemons or `while (true)` loops where charon may restart and recreate the Unix socket file, use `ReconnectingTransport`. It reconnects automatically when a single `send()`, `receive()`, or `hasData()` call fails with `ConnectionException`:
+
+```php
+use Bk203\Vici\Session;
+use Bk203\Vici\Transport\ReconnectingTransport;
+
+$session = new Session(new ReconnectingTransport(
+    path: '/var/run/charon.vici',
+    readTimeout: 30.0,
+));
+
+while (true) {
+    sleep(60);
+    $info = $session->version();
+}
+```
+
+`ReconnectingTransport` is opt-in; `new Session()` alone still uses a plain `UnixSocketTransport` with no automatic recovery.
+
+**v1 limitations**
+
+- Retry covers one transport I/O call. Multi-packet commands (`streamedRequest()`, `EventListener::listen()`) can still fail mid-operation; catch `ConnectionException` and restart the command or listener loop.
+- Daemon-side `EVENT_REGISTER` state is not replayed after reconnect. Re-register events or wait for a future Session-level restore helper.
+- `TimeoutException` is not retried (slow charon is not treated as a dead socket).
 
 ## Common workflows
 
