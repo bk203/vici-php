@@ -214,6 +214,20 @@ try {
 }
 ```
 
+## Known issues
+
+### Stacked `initiate` commands with short client timeouts can lock the VICI socket
+
+`initiate` can run for a long time on the charon side while IKE negotiation retries play out. That sequence has its own timeout (the `timeout` field in the command message, in milliseconds), independent of the transport read timeout on your `Session`.
+
+If the transport read timeout is shorter than that whole charon-side sequence, the client raises `TimeoutException` before charon sends `CMD_RESPONSE`. Catching that exception and immediately sending another `initiate` — or any other command — on the same socket leaves charon still busy with the earlier command. Repeating this pattern desynchronizes the VICI control channel over time: the socket stops responding, every caller cascades into `TimeoutException`, and the lock affects **all** clients on that socket, including `swanctl` and other tools.
+
+**Mitigations**
+
+- Set transport read timeouts well above the `initiate` message `timeout`, or omit a read timeout for long-running control commands.
+- Do not retry `initiate` on the same `Session` after a client-side timeout; treat a wedged socket as requiring a new connection or a charon restart.
+- Keep at most one in-flight `initiate` per connection; wait for charon to finish (success, failure, or its own timeout) before trying again.
+
 ## Architecture
 
 - `Bk203\Vici\Transport\TransportInterface` — 32-bit length-prefixed framing (max 512 KiB), implemented by `UnixSocketTransport`, `TcpSocketTransport`, and `StreamTransport`.
