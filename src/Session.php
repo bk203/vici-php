@@ -6,6 +6,7 @@ namespace Bk203\Vici;
 
 use Bk203\Vici\Exception\CommandException;
 use Bk203\Vici\Exception\CommandUnknownException;
+use Bk203\Vici\Exception\ConnectionException;
 use Bk203\Vici\Exception\EventRegistrationException;
 use Bk203\Vici\Exception\ProtocolException;
 use Bk203\Vici\Message\MessageDecoder;
@@ -13,6 +14,8 @@ use Bk203\Vici\Message\MessageEncoder;
 use Bk203\Vici\Protocol\Packet;
 use Bk203\Vici\Protocol\PacketCodec;
 use Bk203\Vici\Protocol\PacketType;
+use Bk203\Vici\Transport\ReconnectableTransportInterface;
+use Bk203\Vici\Transport\ReconnectingTransport;
 use Bk203\Vici\Transport\TransportInterface;
 use Bk203\Vici\Transport\UnixSocketTransport;
 use Generator;
@@ -49,6 +52,10 @@ final class Session
         $this->packetCodec = new PacketCodec();
         $this->messageEncoder = new MessageEncoder();
         $this->messageDecoder = new MessageDecoder();
+
+        if ($this->transport instanceof ReconnectableTransportInterface) {
+            $this->transport->setOnReconnect($this->restoreDaemonState(...));
+        }
     }
 
     public function transport(): TransportInterface
@@ -96,20 +103,7 @@ final class Session
             return;
         }
 
-        $this->writePacket(Packet::eventRegister($event));
-
-        $reply = $this->readUntilControlPacket([
-            PacketType::EVENT_CONFIRM,
-            PacketType::EVENT_UNKNOWN,
-        ]);
-
-        if ($reply->type === PacketType::EVENT_UNKNOWN) {
-            throw new EventRegistrationException(
-                \sprintf('VICI daemon does not know event "%s".', $event),
-                $event,
-            );
-        }
-
+        $this->registerEventOnDaemon($event);
         $this->registrationRefcount[$event] = 1;
     }
 
@@ -142,22 +136,13 @@ final class Session
      */
     public function request(string $command, array $message = []): array
     {
-        $payload = $this->messageEncoder->encode($message);
-        $this->writePacket(Packet::cmdRequest($command, $payload));
+        try {
+            return $this->executeRequest($command, $message);
+        } catch (ConnectionException) {
+            $this->recoverViaTransportReconnect();
 
-        $reply = $this->readUntilControlPacket([
-            PacketType::CMD_RESPONSE,
-            PacketType::CMD_UNKNOWN,
-        ]);
-
-        if ($reply->type === PacketType::CMD_UNKNOWN) {
-            throw new CommandUnknownException(\sprintf(
-                'VICI daemon does not implement command "%s".',
-                $command,
-            ));
+            return $this->executeRequest($command, $message);
         }
-
-        return $this->messageDecoder->decode($reply->payload);
     }
 
     /**
@@ -241,10 +226,21 @@ final class Session
                 ));
             }
         } finally {
-            if (!$commandCompleted) {
-                $this->drainStreamRemainder($streamEvent);
+            try {
+                if (!$commandCompleted) {
+                    $this->drainStreamRemainder($streamEvent);
+                }
+                $this->unregisterEvent($streamEvent);
+            } catch (ConnectionException) {
+                try {
+                    $this->recoverViaTransportReconnect();
+                    if (!$commandCompleted) {
+                        $this->drainStreamRemainder($streamEvent);
+                    }
+                    $this->unregisterEvent($streamEvent);
+                } catch (ConnectionException) {
+                }
             }
-            $this->unregisterEvent($streamEvent);
         }
     }
 
@@ -353,14 +349,107 @@ final class Session
         }
     }
 
+    /**
+     * @param array<array-key, mixed> $message
+     * @return array<string, mixed>
+     */
+    private function executeRequest(string $command, array $message): array
+    {
+        $payload = $this->messageEncoder->encode($message);
+        $this->writePacket(Packet::cmdRequest($command, $payload));
+
+        $reply = $this->readUntilControlPacket([
+            PacketType::CMD_RESPONSE,
+            PacketType::CMD_UNKNOWN,
+        ]);
+
+        if ($reply->type === PacketType::CMD_UNKNOWN) {
+            throw new CommandUnknownException(\sprintf(
+                'VICI daemon does not implement command "%s".',
+                $command,
+            ));
+        }
+
+        return $this->messageDecoder->decode($reply->payload);
+    }
+
+    private function registerEventOnDaemon(string $event): void
+    {
+        $this->writePacket(Packet::eventRegister($event));
+
+        $reply = $this->readUntilControlPacket([
+            PacketType::EVENT_CONFIRM,
+            PacketType::EVENT_UNKNOWN,
+        ]);
+
+        if ($reply->type === PacketType::EVENT_UNKNOWN) {
+            throw new EventRegistrationException(
+                \sprintf('VICI daemon does not know event "%s".', $event),
+                $event,
+            );
+        }
+    }
+
+    private function restoreDaemonState(): void
+    {
+        foreach ($this->registrationRefcount as $event => $count) {
+            if ($count < 1) {
+                continue;
+            }
+            $this->registerEventOnDaemon($event);
+        }
+    }
+
+    private function recoverViaTransportReconnect(): void
+    {
+        if (!$this->transport instanceof ReconnectableTransportInterface) {
+            throw new ConnectionException('VICI transport does not support reconnection.');
+        }
+
+        $this->transport->reconnect();
+    }
+
+    private function usesSessionIoRecovery(): bool
+    {
+        return $this->transport instanceof ReconnectableTransportInterface
+            && !$this->transport instanceof ReconnectingTransport;
+    }
+
     private function writePacket(Packet $packet): void
     {
-        $this->transport->send($this->packetCodec->encode($packet));
+        $bytes = $this->packetCodec->encode($packet);
+
+        try {
+            $this->transport->send($bytes);
+        } catch (ConnectionException $e) {
+            if (!$this->usesSessionIoRecovery()) {
+                throw $e;
+            }
+
+            $this->recoverViaTransportReconnect();
+            $this->transport->send($bytes);
+        }
     }
 
     private function readPacket(): Packet
     {
+        try {
+            return $this->decodeReceivedPacket();
+        } catch (ConnectionException $e) {
+            if (!$this->usesSessionIoRecovery()) {
+                throw $e;
+            }
+
+            $this->recoverViaTransportReconnect();
+
+            return $this->decodeReceivedPacket();
+        }
+    }
+
+    private function decodeReceivedPacket(): Packet
+    {
         $bytes = $this->transport->receive();
+
         return $this->packetCodec->decode($bytes);
     }
 

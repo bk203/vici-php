@@ -11,7 +11,7 @@ use Bk203\Vici\Exception\ConnectionException;
  * failures. Intended for long-lived loops where charon may restart and
  * recreate the socket file.
  */
-final class ReconnectingTransport implements TransportInterface
+final class ReconnectingTransport implements ReconnectableTransportInterface
 {
     private UnixSocketTransport $inner;
 
@@ -61,6 +61,16 @@ final class ReconnectingTransport implements TransportInterface
         return $this->inner->getStream();
     }
 
+    public function reconnect(): void
+    {
+        $this->inner->reconnect();
+    }
+
+    public function setOnReconnect(?callable $callback): void
+    {
+        $this->inner->setOnReconnect($callback);
+    }
+
     /**
      * @template T
      *
@@ -90,6 +100,14 @@ final class ReconnectingTransport implements TransportInterface
                 } catch (ConnectionException $e) {
                     $last = $e;
                 }
+            }
+
+            if ($last !== $first) {
+                throw new ConnectionException(
+                    $last->getMessage(),
+                    $last->context,
+                    $first,
+                );
             }
 
             throw $last;

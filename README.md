@@ -89,11 +89,13 @@ while (true) {
 
 `ReconnectingTransport` is opt-in; `new Session()` alone still uses a plain `UnixSocketTransport` with no automatic recovery.
 
-**v1 limitations**
+When the transport implements {@see \Bk203\Vici\Transport\ReconnectableTransportInterface} (including `ReconnectingTransport`), `Session` automatically replays daemon-side `EVENT_REGISTER` calls after each reconnect.
 
-- Retry covers one transport I/O call. Multi-packet commands (`streamedRequest()`, `EventListener::listen()`) can still fail mid-operation; catch `ConnectionException` and restart the command or listener loop.
-- Daemon-side `EVENT_REGISTER` state is not replayed after reconnect. Re-register events or wait for a future Session-level restore helper.
+**Limitations**
+
+- `request()` / `requireSuccess()` retry once on `ConnectionException`. Multi-packet commands (`streamedRequest()`, `EventListener::listen()`) do not auto-resume mid-operation; catch `ConnectionException` and restart the command or listener loop.
 - `TimeoutException` is not retried (slow charon is not treated as a dead socket).
+- Custom transports can implement `ReconnectableTransportInterface` and receive the same restore hook via `setOnReconnect()`.
 
 ## Common workflows
 
@@ -190,12 +192,41 @@ All exceptions extend `Bk203\Vici\Exception\ViciException`:
 
 | Exception                    | Thrown when |
 | ---------------------------- | ----------- |
-| `ConnectionException`        | Underlying socket cannot connect, closes mid-stream, or `stream_select()` fails |
+| `ConnectionException`        | Underlying socket cannot connect, closes mid-stream, or `stream_select()` fails. Exposes `->context` (`ConnectionFailureContext`) and `->getDetailedMessage()` with stream metadata, endpoint, partial I/O progress, and PHP error text |
 | `TimeoutException`           | Read/connect timeout elapses |
 | `ProtocolException`          | Framing or message-encoding violation on the wire |
 | `CommandUnknownException`    | Server replies with `CMD_UNKNOWN` |
 | `CommandException`           | Command completes with `success = no`; exposes `->command` and `->response` |
 | `EventRegistrationException` | Server replies with `EVENT_UNKNOWN` to `EVENT_REGISTER` / `EVENT_UNREGISTER` |
+
+For long-lived loops, log the detailed form when a connection fails:
+
+```php
+use Bk203\Vici\Exception\ConnectionException;
+
+try {
+    $session->version();
+} catch (ConnectionException $e) {
+    error_log($e->getDetailedMessage());
+    // Inspect $e->context?->endpoint for "socket file exists" vs stale fd
+    // Inspect $e->context?->streamMeta['eof'] and $e->context?->phpError
+    throw $e;
+}
+```
+
+## Known issues
+
+### Stacked `initiate` commands with short client timeouts can lock the VICI socket
+
+`initiate` can run for a long time on the charon side while IKE negotiation retries play out. That sequence has its own timeout (the `timeout` field in the command message, in milliseconds), independent of the transport read timeout on your `Session`.
+
+If the transport read timeout is shorter than that whole charon-side sequence, the client raises `TimeoutException` before charon sends `CMD_RESPONSE`. Catching that exception and immediately sending another `initiate` — or any other command — on the same socket leaves charon still busy with the earlier command. Repeating this pattern desynchronizes the VICI control channel over time: the socket stops responding, every caller cascades into `TimeoutException`, and the lock affects **all** clients on that socket, including `swanctl` and other tools.
+
+**Mitigations**
+
+- Set transport read timeouts well above the `initiate` message `timeout`, or omit a read timeout for long-running control commands.
+- Do not retry `initiate` on the same `Session` after a client-side timeout; treat a wedged socket as requiring a new connection or a charon restart.
+- Keep at most one in-flight `initiate` per connection; wait for charon to finish (success, failure, or its own timeout) before trying again.
 
 ## Architecture
 

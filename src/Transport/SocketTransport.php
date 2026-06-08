@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Bk203\Vici\Transport;
 
 use Bk203\Vici\Exception\ConnectionException;
+use Bk203\Vici\Exception\ConnectionFailureContext;
 use Bk203\Vici\Exception\ProtocolException;
 use Bk203\Vici\Exception\TimeoutException;
 
@@ -72,7 +73,14 @@ abstract class SocketTransport implements TransportInterface
         $ready = @stream_select($read, $write, $except, $sec, $usec);
 
         if ($ready === false) {
-            $this->connectionFailed('stream_select() failed on VICI transport.');
+            $this->connectionFailed(
+                'stream_select() failed on VICI transport.',
+                $this->buildFailureContext(
+                    operation: 'select',
+                    stream: $stream,
+                    phpError: $this->capturePhpError(),
+                ),
+            );
         }
 
         return $ready > 0;
@@ -101,13 +109,64 @@ abstract class SocketTransport implements TransportInterface
         $this->close();
     }
 
+    protected function getEndpointDescription(): string
+    {
+        return '';
+    }
+
     /**
      * @return never
      */
-    protected function connectionFailed(string $message): void
+    protected function connectionFailed(string $message, ?ConnectionFailureContext $context = null): void
     {
         $this->invalidate();
-        throw new ConnectionException($message);
+        throw new ConnectionException($message, $context);
+    }
+
+    /**
+     * @param resource|null $stream
+     */
+    protected function buildFailureContext(
+        string $operation,
+        $stream = null,
+        ?int $expectedBytes = null,
+        ?int $receivedBytes = null,
+        ?int $errno = null,
+        ?string $phpError = null,
+    ): ConnectionFailureContext {
+        $endpoint = $this->getEndpointDescription();
+
+        return new ConnectionFailureContext(
+            operation: $operation,
+            endpoint: $endpoint !== '' ? $endpoint : null,
+            streamMeta: \is_resource($stream) ? $this->captureStreamMeta($stream) : null,
+            expectedBytes: $expectedBytes,
+            receivedBytes: $receivedBytes,
+            errno: $errno,
+            phpError: $phpError,
+        );
+    }
+
+    protected function capturePhpError(): ?string
+    {
+        $error = error_get_last();
+        if ($error === null) {
+            return null;
+        }
+
+        return $error['message'];
+    }
+
+    /**
+     * @param resource $stream
+     * @return array<string, mixed>
+     */
+    protected function captureStreamMeta($stream): array
+    {
+        /** @var array<string, mixed> $meta */
+        $meta = stream_get_meta_data($stream);
+
+        return $meta;
     }
 
     private function writeAll(string $data): void
@@ -124,9 +183,26 @@ abstract class SocketTransport implements TransportInterface
                     throw new TimeoutException('Timed out writing to VICI socket.');
                 }
                 if (feof($stream)) {
-                    $this->connectionFailed('VICI socket closed during write.');
+                    $this->connectionFailed(
+                        'VICI socket closed during write.',
+                        $this->buildFailureContext(
+                            operation: 'write',
+                            stream: $stream,
+                            expectedBytes: $total - $written,
+                            receivedBytes: $written,
+                        ),
+                    );
                 }
-                $this->connectionFailed('Failed to write to VICI socket.');
+                $this->connectionFailed(
+                    'Failed to write to VICI socket.',
+                    $this->buildFailureContext(
+                        operation: 'write',
+                        stream: $stream,
+                        expectedBytes: $total - $written,
+                        receivedBytes: $written,
+                        phpError: $this->capturePhpError(),
+                    ),
+                );
             }
             $written += $chunk;
         }
@@ -151,7 +227,16 @@ abstract class SocketTransport implements TransportInterface
                 $usec = (int) round(($remaining - $sec) * 1_000_000);
                 $ready = @stream_select($read, $write, $except, $sec, $usec);
                 if ($ready === false) {
-                    $this->connectionFailed('stream_select() failed on VICI transport.');
+                    $this->connectionFailed(
+                        'stream_select() failed on VICI transport.',
+                        $this->buildFailureContext(
+                            operation: 'select',
+                            stream: $stream,
+                            expectedBytes: $length,
+                            receivedBytes: \strlen($buffer),
+                            phpError: $this->capturePhpError(),
+                        ),
+                    );
                 }
                 if ($ready === 0) {
                     throw new TimeoutException('Timed out reading from VICI socket.');
@@ -162,11 +247,28 @@ abstract class SocketTransport implements TransportInterface
             \assert($need > 0);
             $chunk = @fread($stream, $need);
             if ($chunk === false) {
-                $this->connectionFailed('Failed to read from VICI socket.');
+                $this->connectionFailed(
+                    'Failed to read from VICI socket.',
+                    $this->buildFailureContext(
+                        operation: 'read',
+                        stream: $stream,
+                        expectedBytes: $need,
+                        receivedBytes: \strlen($buffer),
+                        phpError: $this->capturePhpError(),
+                    ),
+                );
             }
             if ($chunk === '') {
                 if (feof($stream)) {
-                    $this->connectionFailed('VICI socket closed during read.');
+                    $this->connectionFailed(
+                        'VICI socket closed during read.',
+                        $this->buildFailureContext(
+                            operation: 'read',
+                            stream: $stream,
+                            expectedBytes: $need,
+                            receivedBytes: \strlen($buffer),
+                        ),
+                    );
                 }
                 $meta = stream_get_meta_data($stream);
                 if ($meta['timed_out']) {
@@ -187,7 +289,10 @@ abstract class SocketTransport implements TransportInterface
     private function requireStream()
     {
         if (!\is_resource($this->stream)) {
-            $this->connectionFailed('VICI transport is not connected.');
+            $this->connectionFailed(
+                'VICI transport is not connected.',
+                $this->buildFailureContext(operation: 'require_stream'),
+            );
         }
         return $this->stream;
     }

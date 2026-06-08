@@ -147,9 +147,12 @@ final class StreamTransportTest extends TestCase
         try {
             $transport->receive(0.5);
             self::fail('Expected ConnectionException.');
-        } catch (\Bk203\Vici\Exception\ConnectionException) {
+        } catch (\Bk203\Vici\Exception\ConnectionException $e) {
             self::assertFalse($transport->isConnected());
             self::assertNull($transport->getStream());
+            self::assertNotNull($e->context);
+            self::assertSame('read', $e->context->operation);
+            self::assertTrue($e->context->streamMeta['eof'] ?? false);
         }
     }
 
